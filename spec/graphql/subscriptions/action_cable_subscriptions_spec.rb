@@ -78,12 +78,22 @@ describe GraphQL::Subscriptions::ActionCableSubscriptions do
       argument :fuzzy, Boolean, required: false
     end
 
+    class NewsFlashMetadata < GraphQL::Schema::Object
+      field :created_at, GraphQL::Types::ISO8601DateTime, null: false
+    end
+
     class NewsFlash < GraphQL::Schema::Subscription
       argument :max_per_hour, Integer, required: false
       argument :filter, Filter, required: false
       argument :keywords, [Keyword], required: false
 
       field :text, String, null: false
+      field :metadata, NewsFlashMetadata, null: false
+      field :bomb, Int, null: false
+      def bomb
+        p "#bomb"
+        {}.fetch('no_such_property_so_this_will_be_a_runtime_error')
+      end
     end
 
     class Subscription < GraphQL::Schema::Object
@@ -111,7 +121,11 @@ describe GraphQL::Subscriptions::ActionCableSubscriptions do
   end
 
   def subscription_update(data)
-    { result: { "data" => data }, more: true }
+    subscription_result({ "data" => data})
+  end
+
+  def subscription_result(result)
+    { result: result, more: true }
   end
 
   it "sends updates over the given `action_cable:`" do
@@ -200,6 +214,45 @@ describe GraphQL::Subscriptions::ActionCableSubscriptions do
       "graphql-event:other::newsFlash:",
     ]
     assert_equal expected_streams, MockActionCable.mock_stream_names
+  end
+
+  it "broadcasts error when trigger fails to resolve to a type" do
+    mock_channel = MockActionCable.get_mock_channel
+    ActionCableTestSchema.execute("subscription { newsFlash { text } }", context: { channel: mock_channel })
+    ActionCableTestSchema.subscriptions.trigger(:news_flash, {}, { TeXt: "foo" })
+
+    expected_msg = subscription_result({
+                                         "data" => nil,
+                                         "errors" => [{
+                                            "message" => "Cannot return null for non-nullable field NewsFlashPayload.text"
+                                         }]
+                                       })
+    assert_equal [expected_msg], mock_channel.mock_broadcasted_messages
+  end
+
+  it "broadcasts error when trigger fails to resolve to a type for nested property" do
+    mock_channel = MockActionCable.get_mock_channel
+    ActionCableTestSchema.execute("subscription { newsFlash { text metadata { createdAt } } }", context: { channel: mock_channel })
+    ActionCableTestSchema.subscriptions.trigger(:news_flash, {}, { text: "foo", mEtAdAtA: { created_at: DateTime.now }})
+
+    expected_msg = subscription_result({
+                                         "data" => nil,
+                                         "errors" => [{
+                                            "message" => "Cannot return null for non-nullable field NewsFlashPayload.metadata"
+                                         }]
+                                       })
+    assert_equal [expected_msg], mock_channel.mock_broadcasted_messages
+  end
+
+  it "broadcasts error when trigger fails to resolve to a type for nested property" do
+    mock_channel = MockActionCable.get_mock_channel
+    ActionCableTestSchema.execute("subscription { newsFlash { bomb } }", context: { channel: mock_channel })
+    # error = assert_raises(StandardError) do
+      ActionCableTestSchema.subscriptions.trigger(:news_flash, {}, { bomb: 42 })
+    # end
+
+    # assert_equal error.message, "no_such_property_so_this_will_be_a_runtime_error"
+    assert_equal [], mock_channel.mock_broadcasted_messages
   end
 
   it "handles `execute_update` for a missing subscription ID" do
